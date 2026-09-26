@@ -2800,11 +2800,20 @@ class AircraftDB:
         except Exception as e: sys.stderr.write(f"[session] restore: {e}\n")
 
 # --- Auto-PPM ---
+
+    @staticmethod
+    def _dr_calc(lat, lon, hdg, dist):
+        """Shared dead-reckoning calculation (flat-earth approx)."""
+        dr_lat = lat + dist * math.cos(math.radians(hdg)) / 111.32
+        dr_lon = lon + dist * math.sin(math.radians(hdg)) / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+        return dr_lat, dr_lon
+
     def auto_ppm(self, proc, current_ppm, current_gain):
         if not ENABLE_PPM_AUTO: return current_ppm, proc
         min_valid = max(PPM_AUTO_MIN_VALID, POSITION_RELIABLE_MIN)
-        valid = [a for a in self.ac.values()
-                 if a.get("pos_reliable",0) >= min_valid and a.get("lat") and a.get("lon")]
+        with self._lock:
+            valid = [a for a in self.ac.values()
+                     if a.get("pos_reliable",0) >= min_valid and a.get("lat") and a.get("lon")]
         if len(valid) < PPM_AUTO_MIN_SAMPLES: return current_ppm, proc
         now = time.time(); offset_sum = 0; offset_count = 0
         for a in valid:
@@ -2813,8 +2822,7 @@ class AircraftDB:
             dt = now - a.get("pos_time", now)
             if spd is None or hdg is None or dt < 2 or dt > PPM_AUTO_MAX_POS_AGE: continue
             spd_kms = spd * 1.852 / 3600.0; dist = spd_kms * dt
-            dr_lat = a["lat"] + dist*math.cos(math.radians(hdg))/111.32
-            dr_lon = a["lon"] + dist*math.sin(math.radians(hdg))/(111.32*max(math.cos(math.radians(a["lat"])),0.01))
+            dr_lat, dr_lon = self._dr_calc(a["lat"], a["lon"], hdg, dist)
             diff = haversine_km(a["lat"], a["lon"], dr_lat, dr_lon)
             if diff > 0.1: offset_sum += diff; offset_count += 1
         if offset_count < PPM_AUTO_MIN_SAMPLES: return current_ppm, proc
@@ -2936,7 +2944,7 @@ class AircraftDB:
     def update(self, icao, rssi=None, **kw):
         e = self.ac.setdefault(icao, {"first_seen": time.time()})
         e["msg_count"] = e.get("msg_count", 0) + 1
-        if rssi is not None: e["rssi"] = rssi; e["max_rssi"] = max(rssi, e.get("max_rssi", -100))
+        if rssi is not None: e["rssi"] = rssi; e["max_rssi"] = max(rssi, e.get("max_rssi", -999.0))
         if "squawk" in kw and kw["squawk"]:
             sq = kw["squawk"]
             if sq in self.squawk_counts or len(self.squawk_counts) < 50:
@@ -3302,7 +3310,8 @@ class AircraftDB:
                     if pair_key not in self._proximity_played_pairs and ENABLE_SOUND_PROXIMITY:
                         self._proximity_played_pairs.add(pair_key)
                         self.play_proximity()
-                        self.stats["proximity_count"] += 1
+                        with self._lock:
+                            self.stats["proximity_count"] += 1
                         self.new_events.append(
                             f"  {c('[PROXIMITY]', Color.YELLOW)} {icaos[i]} ↔ {icaos[j]} — {fmt_distance(dist)}")
                 # Head-on courses
@@ -3319,7 +3328,8 @@ class AircraftDB:
                             self.new_events.append(
                                 f"  {c('[HEAD-ON]', Color.MAGENTA)} {icaos[i]} ({h1:.0f}°) ↔ {icaos[j]} ({h2:.0f}°)")
         # Remove pairs that are no longer close (allow re-trigger)
-        self._proximity_played_pairs &= current_proximity_pairs
+                with self._lock:
+            self._proximity_played_pairs &= current_proximity_pairs
         self._headon_played_pairs &= current_headon_pairs
 
     def dead_reckon(self):
@@ -4384,6 +4394,13 @@ class AircraftDB:
 
         self.collect_analytics(force=True)
 
+        with self._lock:
+            _active = sum(1 for ac in self.ac.values() if time.time() - ac.get("last_seen", 0) < 60)
+            _df_hist_s = list(self.df_history)
+            _heatmap_s = {k: v for k, v in list(self.heatmap_grid.items())[:500]}
+            _coverage_s = list(self.coverage_bins)
+            _rssi_b_s = list(self.rssi_bins)
+            _rssi_c_s = list(self.rssi_counts)
         sorted_types = sorted(self.type_counts_session.items(), key=lambda x: -x[1])[:15]
         snapshot = {
             "timestamp": time.time(),
@@ -4405,17 +4422,17 @@ class AircraftDB:
             "min_alt": self.stats.get("min_alt_ft", 0),
             "max_range": round(self.stats.get("max_range_km", 0), 1),
             "msg_rate": round(self.get_msg_rate(), 1) if hasattr(self, "get_msg_rate") else 0,
-            "active_aircraft": sum(1 for ac in self.ac.values() if time.time() - ac.get("last_seen", 0) < 60),
+            "active_aircraft": _active,
             "stats": dict(self.stats),
             "df_counts": {f"DF{e['df']}": sum(1 for x in self.df_history if x['df'] == e['df']) for e in self.df_history},
-            "cat_history": list(self.cat_history)[-10:],
-            "coverage_bins": list(self.coverage_bins),
-            "rssi_bins": list(self.rssi_bins),
-            "rssi_counts": list(self.rssi_counts),
-            "heatmap_grid": {k: v for k, v in list(self.heatmap_grid.items())[:500]},
+            "cat_history": _cat_h,
+            "coverage_bins": _coverage,
+            "rssi_bins": _rssi_b,
+            "rssi_counts": _rssi_c,
+            "heatmap_grid": dict(_heatmap_items),
             "doppler": self.doppler_data if self.doppler_data.get("measurements") else {"measurements": [], "ppm_estimate": 0.0},
-            "squawk_counts": dict(self.squawk_counts),
-            "adsb_version_counts": dict(self.adsb_version_counts),
+            "squawk_counts": _squawk,
+            "adsb_version_counts": _version,
         }
 
         filepath = os.path.join(hist_dir, f"{time_str}.json")
@@ -4498,6 +4515,16 @@ class AircraftDB:
     def _collect_live_as_snapshot(self):
         """Collect current live statistics into snapshot format."""
         self.collect_analytics(force=True)
+        with self._lock:
+            _ac_count = len(self.ac)
+            _df_hist = list(self.df_history)
+            _heatmap_items = list(self.heatmap_grid.items())[:500]
+            _coverage = list(self.coverage_bins)
+            _rssi_b = list(self.rssi_bins)
+            _rssi_c = list(self.rssi_counts)
+            _squawk = dict(self.squawk_counts)
+            _version = dict(self.adsb_version_counts)
+            _cat_h = list(self.cat_history)[-10:]
         sorted_types = sorted(self.type_counts_session.items(), key=lambda x: -x[1])[:15]
         return {
             "timestamp": time.time(),
@@ -4513,17 +4540,17 @@ class AircraftDB:
                 for i in range(30)
             ],
             "total_aircraft": self.stats.get("total_aircraft", 0),
-            "active_aircraft": len(self.ac),
+            "active_aircraft": _ac_count,
             "max_speed": self.stats.get("max_speed_kt", 0),
             "min_speed": self.stats.get("min_speed_kt", 0),
             "max_alt": self.stats.get("max_alt_ft", 0),
             "min_alt": self.stats.get("min_alt_ft", 0),
             "doppler": self.doppler_data if self.doppler_data["measurements"] else {"measurements": [], "ppm_estimate": 0.0},
             "max_range": round(self.stats.get("max_range_km", 0), 1),
-            "coverage_bins": list(self.coverage_bins),
-            "rssi_bins": list(self.rssi_bins),
-            "rssi_counts": list(self.rssi_counts),
-            "heatmap_grid": {k: v for k, v in list(self.heatmap_grid.items())[:500]},
+            "coverage_bins": _coverage_s,
+            "rssi_bins": _rssi_b_s,
+            "rssi_counts": _rssi_c_s,
+            "heatmap_grid": _heatmap_s,
             "squawk_counts": dict(self.squawk_counts),
             "adsb_version_counts": dict(self.adsb_version_counts),
             "df_counts": {f"DF{e['df']}": sum(1 for x in self.df_history if x['df'] == e['df']) for e in self.df_history},
@@ -7258,8 +7285,9 @@ def main():
             # Search and decode UAT
             if ENABLE_UAT:
                 for start in find_uat_preambles(mag, db.noise_floor):
-                    try: rssi_uat = compute_rssi(mag, int(start), db.noise_floor)
-                    decode_uat_message(mag, int(start), db, rssi=rssi_uat)
+                    try:
+                        rssi_uat = compute_rssi(mag, int(start), db.noise_floor)
+                        decode_uat_message(mag, int(start), db, rssi=rssi_uat)
                     except Exception:
                         log.exception("Main loop: error decoding UAT message")
             # Check silence and reset flag
