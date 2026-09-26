@@ -3324,13 +3324,14 @@ class AircraftDB:
                         if pair_key not in self._headon_played_pairs and ENABLE_SOUND_HEADON:
                             self._headon_played_pairs.add(pair_key)
                             self.play_headon()
-                            self.stats["headon_count"] += 1
+                            with self._lock:
+                                self.stats["headon_count"] += 1
                             self.new_events.append(
                                 f"  {c('[HEAD-ON]', Color.MAGENTA)} {icaos[i]} ({h1:.0f}°) ↔ {icaos[j]} ({h2:.0f}°)")
         # Remove pairs that are no longer close (allow re-trigger)
-                with self._lock:
+        with self._lock:
             self._proximity_played_pairs &= current_proximity_pairs
-        self._headon_played_pairs &= current_headon_pairs
+            self._headon_played_pairs &= current_headon_pairs
 
     def dead_reckon(self):
         if not ENABLE_DEAD_RECKONING: return
@@ -4401,7 +4402,16 @@ class AircraftDB:
             _coverage_s = list(self.coverage_bins)
             _rssi_b_s = list(self.rssi_bins)
             _rssi_c_s = list(self.rssi_counts)
+            _stats_s = dict(self.stats)
+            _squawk_s = dict(self.squawk_counts)
+            _version_s = dict(self.adsb_version_counts)
+            _cat_h_s = list(self.cat_history)[-10:] if hasattr(self, "cat_history") else []
+            _doppler_s = dict(self.doppler_data) if hasattr(self, "doppler_data") else {"measurements": [], "ppm_estimate": 0.0}
         sorted_types = sorted(self.type_counts_session.items(), key=lambda x: -x[1])[:15]
+        _df_counts = {}
+        for _e in _df_hist_s:
+            _k = "DF" + str(_e["df"])
+            _df_counts[_k] = _df_counts.get(_k, 0) + 1
         snapshot = {
             "timestamp": time.time(),
             "datetime": now_dt.strftime("%Y-%m-%d %H:%M"),
@@ -4415,33 +4425,32 @@ class AircraftDB:
                 {"range": f"{i*50}-{(i+1)*50}", "count": self.speed_histogram_session[i]}
                 for i in range(30)
             ],
-            "total_aircraft": self.stats.get("total_aircraft", 0),
-            "max_speed": self.stats.get("max_speed_kt", 0),
-            "min_speed": self.stats.get("min_speed_kt", 0),
-            "max_alt": self.stats.get("max_alt_ft", 0),
-            "min_alt": self.stats.get("min_alt_ft", 0),
-            "max_range": round(self.stats.get("max_range_km", 0), 1),
+            "total_aircraft": _stats_s.get("total_aircraft", 0),
+            "max_speed": _stats_s.get("max_speed_kt", 0),
+            "min_speed": _stats_s.get("min_speed_kt", 0),
+            "max_alt": _stats_s.get("max_alt_ft", 0),
+            "min_alt": _stats_s.get("min_alt_ft", 0),
+            "max_range": round(_stats_s.get("max_range_km", 0), 1),
             "msg_rate": round(self.get_msg_rate(), 1) if hasattr(self, "get_msg_rate") else 0,
             "active_aircraft": _active,
-            "stats": dict(self.stats),
-            "df_counts": {f"DF{e['df']}": sum(1 for x in self.df_history if x['df'] == e['df']) for e in self.df_history},
-            "cat_history": _cat_h,
-            "coverage_bins": _coverage,
-            "rssi_bins": _rssi_b,
-            "rssi_counts": _rssi_c,
-            "heatmap_grid": dict(_heatmap_items),
-            "doppler": self.doppler_data if self.doppler_data.get("measurements") else {"measurements": [], "ppm_estimate": 0.0},
-            "squawk_counts": _squawk,
-            "adsb_version_counts": _version,
+            "stats": _stats_s,
+            "df_counts": _df_counts,
+            "cat_history": _cat_h_s,
+            "coverage_bins": _coverage_s,
+            "rssi_bins": _rssi_b_s,
+            "rssi_counts": _rssi_c_s,
+            "heatmap_grid": _heatmap_s,
+            "doppler": _doppler_s if _doppler_s.get("measurements") else {"measurements": [], "ppm_estimate": 0.0},
+            "squawk_counts": _squawk_s,
+            "adsb_version_counts": _version_s,
         }
 
         filepath = os.path.join(hist_dir, f"{time_str}.json")
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json_module.dump(snapshot, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            sys.stderr.write(f"[stats-history] save: {e}\n")
-
+            sys.stderr.write(f"[stats-history] save: {e}")
     def cleanup_stats_history(self):
         """Delete snapshots older than STATS_HISTORY_RETENTION_DAYS."""
         if not ENABLE_STATS_HISTORY or not os.path.isdir(STATS_HISTORY_DIR):
@@ -4524,8 +4533,29 @@ class AircraftDB:
             _rssi_c = list(self.rssi_counts)
             _squawk = dict(self.squawk_counts)
             _version = dict(self.adsb_version_counts)
-            _cat_h = list(self.cat_history)[-10:]
+            _cat_h = list(self.cat_history)[-10:] if hasattr(self, "cat_history") else []
+            _stats = dict(self.stats)
         sorted_types = sorted(self.type_counts_session.items(), key=lambda x: -x[1])[:15]
+        _df_counts = {}
+        for _e in _df_hist:
+            _k = "DF" + str(_e["df"])
+            _df_counts[_k] = _df_counts.get(_k, 0) + 1
+        _sector_ranges = []
+        for i in range(12):
+            _bins = _coverage[i*6:(i+1)*6]
+            _rb = _rssi_b[i*6:(i+1)*6]
+            _rc = _rssi_c[i*6:(i+1)*6]
+            _max_r = max(_bins) if _bins else 0
+            _sum_c = sum(_rc)
+            _avg_rssi = None
+            if _sum_c > 0:
+                _avg_rssi = round(sum(_rb[j] * _rc[j] for j in range(6)) / max(_sum_c, 1), 1)
+            _sector_ranges.append({
+                "sector": i,
+                "azimuth": f"{i*30}-{(i+1)*30}",
+                "max_range_km": round(_max_r, 1),
+                "avg_rssi": _avg_rssi,
+            })
         return {
             "timestamp": time.time(),
             "datetime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -4539,46 +4569,30 @@ class AircraftDB:
                 {"range": f"{i*50}-{(i+1)*50}", "count": self.speed_histogram_session[i]}
                 for i in range(30)
             ],
-            "total_aircraft": self.stats.get("total_aircraft", 0),
+            "total_aircraft": _stats.get("total_aircraft", 0),
             "active_aircraft": _ac_count,
-            "max_speed": self.stats.get("max_speed_kt", 0),
-            "min_speed": self.stats.get("min_speed_kt", 0),
-            "max_alt": self.stats.get("max_alt_ft", 0),
-            "min_alt": self.stats.get("min_alt_ft", 0),
-            "doppler": self.doppler_data if self.doppler_data["measurements"] else {"measurements": [], "ppm_estimate": 0.0},
-            "max_range": round(self.stats.get("max_range_km", 0), 1),
-            "coverage_bins": _coverage_s,
-            "rssi_bins": _rssi_b_s,
-            "rssi_counts": _rssi_c_s,
-            "heatmap_grid": _heatmap_s,
-            "squawk_counts": dict(self.squawk_counts),
-            "adsb_version_counts": dict(self.adsb_version_counts),
-            "df_counts": {f"DF{e['df']}": sum(1 for x in self.df_history if x['df'] == e['df']) for e in self.df_history},
-            "cat_history": list(self.cat_history)[-10:],
-            "sector_ranges": [
-                {"sector": i, "azimuth": f"{i*30}-{(i+1)*30}",
-                 "max_range_km": round(max(self.coverage_bins[i*6:(i+1)*6]), 1),
-                 "avg_rssi": round(
-                     sum(self.rssi_bins[i*6:(i+1)*6][j] * self.rssi_counts[i*6:(i+1)*6][j]
-                         for j in range(6)) /
-                     max(sum(self.rssi_counts[i*6:(i+1)*6]), 1), 1)
-                 if sum(self.rssi_counts[i*6:(i+1)*6]) > 0 else None}
-                for i in range(12)
-            ],
+            "max_speed": _stats.get("max_speed_kt", 0),
+            "min_speed": _stats.get("min_speed_kt", 0),
+            "max_alt": _stats.get("max_alt_ft", 0),
+            "min_alt": _stats.get("min_alt_ft", 0),
+            "max_range": round(_stats.get("max_range_km", 0), 1),
+            "coverage_bins": _coverage,
+            "rssi_bins": _rssi_b,
+            "rssi_counts": _rssi_c,
+            "heatmap_grid": dict(_heatmap_items),
+            "squawk_counts": _squawk,
+            "adsb_version_counts": _version,
+            "df_counts": _df_counts,
+            "cat_history": _cat_h,
+            "sector_ranges": _sector_ranges,
             "stats": {
-                "total_aircraft": self.stats.get("total_aircraft", 0),
-                "max_speed": self.stats.get("max_speed_kt", 0),
-                "max_alt": self.stats.get("max_alt_ft", 0),
-                "max_range": round(self.stats.get("max_range_km", 0), 1),
-                "returns": self.stats.get("return_count", 0),
-                "unit_speed": UNIT_SPEED,
-                "unit_alt": UNIT_ALT,
-                "unit_distance": UNIT_DISTANCE,
-                "unit_vrate": UNIT_VRATE,
+                "total_aircraft": _stats.get("total_aircraft", 0),
+                "max_speed_kt": _stats.get("max_speed_kt", 0),
+                "max_alt_ft": _stats.get("max_alt_ft", 0),
+                "max_range_km": _stats.get("max_range_km", 0),
+                "return_count": _stats.get("return_count", 0),
             },
         }
-
-
 def get_history_range(db, from_date, to_date):
     """Aggregate snapshots for date range + live session.
 
