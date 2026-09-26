@@ -8,7 +8,7 @@ This project is licensed under the GNU General Public License v3.
 
 ## Overview
 
-dx1090 is a Python-based real-time ADS-B decoder with a built-in web dashboard. It receives and decodes Mode S (ADS-B), Mode A/C, and UAT 978 MHz signals from RTL-SDR, Airspy, HackRF, or bladeRF receivers — all from a single file, no compilation, no external services required.
+DX1090 is a Python-based real-time ADS-B decoder with a built-in web dashboard. It receives and decodes Mode S (ADS-B), Mode A/C, and UAT 978 MHz signals from RTL-SDR, Airspy, HackRF, or bladeRF receivers — all from a single file, no compilation, no external services required.
 
 The decoder processes raw I/Q samples directly from the SDR hardware, performs full Mode S demodulation with multi-phase bit recovery, CRC validation and single/double-bit error correction, and decodes every Downlink Format (DF 0–25) defined in ICAO Annex 10. ADS-B messages (TC 1–31) are parsed for callsign, position (CPR Global and Local), altitude (Gillham-coded barometric and GNSS), ground speed, vertical rate, squawk, and aircraft category. In addition, thirteen Comm-B BDS registers (1.0 through 6.1) are decoded, providing access to selected altitude, meteorological data (wind, temperature, pressure), weather hazards (turbulence, icing), track-and-turn reports, selected heading, TCAS track data, and heading/speed parameters.
 

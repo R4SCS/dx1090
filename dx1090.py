@@ -3171,7 +3171,7 @@ class AircraftDB:
         else:
             self.event(icao, f"[DF{'25' if is_reply else '24'}] ELM seg {sn+1}/{sp}")
 
-    def update_cpr(self, icao, lat_cpr, lon_cpr, fmt, t, ground=False):
+    def update_cpr(self, icao, lat_cpr, lon_cpr, fmt, t, ground=False, rssi=None):
         store = self.cpr_ground if ground else self.cpr
         key = "even" if fmt == 0 else "odd"
         store.setdefault(icao, {})[key] = {"lat": lat_cpr, "lon": lon_cpr, "t": t}
@@ -3184,17 +3184,17 @@ class AircraftDB:
         if ev and od:
             even_newer = ev["t"] >= od["t"]
             lat, lon = cpr_decode(ev["lat"], ev["lon"], od["lat"], od["lon"], even_newer, ground=ground)
-            if lat is not None and self._validate_and_update(icao, lat, lon, ground):
+            if lat is not None and self._validate_and_update(icao, lat, lon, ground, rssi):
                 return (lat, lon)
         ac = self.ac.get(icao, {})
         ref_lat, ref_lon = ac.get("lat"), ac.get("lon")
         if ref_lat is not None and ref_lon is not None and ac.get("pos_reliable", 0) >= POSITION_RELIABLE_MIN:
             lat, lon = cpr_decode_local(lat_cpr, lon_cpr, fmt, ref_lat, ref_lon, ground=ground)
-            if lat is not None and self._validate_and_update(icao, lat, lon, ground):
+            if lat is not None and self._validate_and_update(icao, lat, lon, ground, rssi):
                 return (lat, lon)
         return None
 
-    def _validate_and_update(self, icao, lat, lon, ground):
+    def _validate_and_update(self, icao, lat, lon, ground, rssi=None):
         ac = self.ac.get(icao, {})
         old_lat, old_lon = ac.get("lat"), ac.get("lon")
         pos_rel = ac.get("pos_reliable", 0)
@@ -3832,7 +3832,7 @@ class AircraftDB:
             lat_cpr = bits_to_int(bits[54:71]) / GROUND_CPR_MAX
             lon_cpr = bits_to_int(bits[71:88]) / GROUND_CPR_MAX
             self.update(icao, rssi=rssi, on_ground=True, ground_speed=ground_speed)
-            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=True)
+            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=True, rssi=rssi)
             if ENABLE_NIC:
                 nic = NIC_SURFACE_BASE.get(tc, 0)
                 ac = self.ac.get(icao, {})
@@ -3848,7 +3848,7 @@ class AircraftDB:
             fmt = bits[53]
             lat_cpr = bits_to_int(bits[54:71]) / AIRBORN_CPR_MAX
             lon_cpr = bits_to_int(bits[71:88]) / AIRBORN_CPR_MAX
-            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=False)
+            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=False, rssi=rssi)
             if ENABLE_NIC:
                 nic = NIC_AIRBORNE_BASE.get(tc, 0)
                 ac = self.ac.get(icao, {})
@@ -3872,7 +3872,7 @@ class AircraftDB:
             lat_cpr = bits_to_int(bits[54:71]) / AIRBORN_CPR_MAX
             lon_cpr = bits_to_int(bits[71:88]) / AIRBORN_CPR_MAX
             self.update(icao, rssi=rssi, gnss_altitude=alt, on_ground=False)
-            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=False)
+            res = self.update_cpr(icao, lat_cpr, lon_cpr, fmt, t, ground=False, rssi=rssi)
             if ENABLE_NIC:
                 nic = NIC_AIRBORNE_BASE.get(tc, 0)
                 self.update(icao, nic=NIC_RADIUS.get(nic, f"?{nic}")); self.stats["nic_decoded"] += 1
