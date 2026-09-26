@@ -4612,9 +4612,15 @@ def get_history_range(db, from_date, to_date):
     cat_agg = []
 
     # --- Disk snapshots: take LAST snapshot per day (cumulative counter) ---
+    # Skip today disk snapshot if live session will be added (avoid double counting)
+    _today_str = datetime.datetime.now().strftime('%Y-%m-%d')
     cur = d_from
     while cur <= d_to:
         date_str = cur.strftime("%Y-%m-%d")
+        # Skip today disk snapshot - live session provides current data
+        if date_str == _today_str:
+            cur += _td_inner(days=1)
+            continue
         date_dir = os.path.join(STATS_HISTORY_DIR, date_str)
         if os.path.isdir(date_dir):
             last_snap = None
@@ -6064,7 +6070,7 @@ class DecodeWorker:
                 if ok: self.msg_valid += 1
                 self.db.record_quality(ok, recv_strong)
             except Exception:
-                        log.exception("DecodeWorker: error processing message")
+                log.exception("DecodeWorker: error processing message")
 
     def submit(self, bits, t, rssi=None, crc_ok=False, recv_strong=False):
         try:
@@ -6453,7 +6459,7 @@ def find_uat_preambles(mag, noise_floor=0.0):
         idx = idx[keep]
     return idx
 
-def decode_uat_message(mag, start, db):
+def decode_uat_message(mag, start, db, rssi=None):
     """Decode UAT message (TC 2/3)."""
     spb = SAMPLES_PER_BIT
     total_bits = UAT_LONG_LEN + 36
@@ -6553,7 +6559,7 @@ def decode_uat_message(mag, start, db):
     db.stats["uat_count"] += 1
     update_kw = {"callsign": result.get("callsign", "")}
     if result.get("lat") is not None and result.get("lon") is not None:
-        if hasattr(db, '_validate_and_update') and db._validate_and_update(icao, result["lat"], result["lon"], ground=False):
+        if hasattr(db, '_validate_and_update') and db._validate_and_update(icao, result["lat"], result["lon"], ground=False, rssi=rssi):
             pass  # position passed validation and saved via _validate_and_update
         else:
             update_kw.pop("lat", None); update_kw.pop("lon", None); update_kw.pop("distance", None)
@@ -7252,7 +7258,8 @@ def main():
             # Search and decode UAT
             if ENABLE_UAT:
                 for start in find_uat_preambles(mag, db.noise_floor):
-                    try: decode_uat_message(mag, int(start), db)
+                    try: rssi_uat = compute_rssi(mag, int(start), db.noise_floor)
+                    decode_uat_message(mag, int(start), db, rssi=rssi_uat)
                     except Exception:
                         log.exception("Main loop: error decoding UAT message")
             # Check silence and reset flag
