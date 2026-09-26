@@ -3276,11 +3276,17 @@ class AircraftDB:
         now = time.time()
         if now - self._proximity_checked < 10: return
         self._proximity_checked = now
+        if not hasattr(self, '_proximity_played_pairs'):
+            self._proximity_played_pairs = set()
+        if not hasattr(self, '_headon_played_pairs'):
+            self._headon_played_pairs = set()
         with self._lock:
             icaos = [ic for ic, a in self.ac.items()
                      if a.get("lat") is not None and a.get("lon") is not None
                      and a.get("pos_reliable", 0) >= POSITION_RELIABLE_MIN]
             ac_snapshot = {ic: self.ac[ic] for ic in icaos}
+        current_proximity_pairs = set()
+        current_headon_pairs = set()
         for i in range(len(icaos)):
             for j in range(i + 1, len(icaos)):
                 a1 = ac_snapshot[icaos[i]]; a2 = ac_snapshot[icaos[j]]
@@ -3289,11 +3295,12 @@ class AircraftDB:
                 if lat1 is None or lat2 is None: continue
                 dist = haversine_km(lat1, lon1, lat2, lon2)
                 alt_diff = abs((a1.get("altitude") or 0) - (a2.get("altitude") or 0))
+                pair_key = tuple(sorted([icaos[i], icaos[j]]))
                 # Proximity
                 if dist < PROXIMITY_HORIZ_KM and alt_diff < PROXIMITY_VERT_FT:
-                    pair_key = tuple(sorted([icaos[i], icaos[j]]))
-                    if not a1.get("proximity_played") and ENABLE_SOUND_PROXIMITY:
-                        a1["proximity_played"] = True; a2["proximity_played"] = True
+                    current_proximity_pairs.add(pair_key)
+                    if pair_key not in self._proximity_played_pairs and ENABLE_SOUND_PROXIMITY:
+                        self._proximity_played_pairs.add(pair_key)
                         self.play_proximity()
                         self.stats["proximity_count"] += 1
                         self.new_events.append(
@@ -3304,12 +3311,16 @@ class AircraftDB:
                     diff = abs(h1 - h2)
                     if diff > 180: diff = 360 - diff
                     if diff > HEADON_COURSE_DIFF:
-                        if not a1.get("headon_played") and ENABLE_SOUND_HEADON:
-                            a1["headon_played"] = True; a2["headon_played"] = True
+                        current_headon_pairs.add(pair_key)
+                        if pair_key not in self._headon_played_pairs and ENABLE_SOUND_HEADON:
+                            self._headon_played_pairs.add(pair_key)
                             self.play_headon()
                             self.stats["headon_count"] += 1
                             self.new_events.append(
                                 f"  {c('[HEAD-ON]', Color.MAGENTA)} {icaos[i]} ({h1:.0f}°) ↔ {icaos[j]} ({h2:.0f}°)")
+        # Remove pairs that are no longer close (allow re-trigger)
+        self._proximity_played_pairs &= current_proximity_pairs
+        self._headon_played_pairs &= current_headon_pairs
 
     def dead_reckon(self):
         if not ENABLE_DEAD_RECKONING: return
